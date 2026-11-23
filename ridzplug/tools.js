@@ -1,0 +1,1129 @@
+const moment = require('moment-timezone');
+const {translate} = require('@vitalets/google-translate-api')
+const googleTTS = require('google-tts-api')
+const PDFDocument = require('pdfkit')
+const fs = require('fs');
+const axios = require('axios');
+const fetch = require("node-fetch")
+const { exec } = require('child_process');
+const {styletext, Wikimedia, wallpaper} = require('../start/lib/scraper')
+const { takeCommand } = require('../start/ridzcmd/commands');
+const { handleMediaUpload } = require('../start/lib/catbox');
+const { obfuscateJS } = require("../start/lib/encapsulation");
+
+module.exports = [
+    {
+        command: ['time'],
+        operate: async ({ ridzcoder, m, reply, text, timezones, prefix, global }) => {
+            try {
+                let countryName = text.trim();
+                
+                if (!countryName) {
+                    const now = moment().tz(global.timezones || "Africa/Kampala");
+                    const timeInfo = `
+    ╭──⧼♛ *Current Bot Time* 
+    │┃ ♛
+    │┃ ♛ *Timezone:* ${now.format('z (Z)')}
+    │┃ ♛ *Date:* ${now.format('dddd, MMMM Do YYYY')}
+    │┃ ♛ *Time:* ${now.format('h:mm:ss A')}
+    │┃ ♛ *Week Number:* ${now.format('WW')}
+    │┃ ♛ *Day of Year:* ${now.format('DDD')}
+    ╰────────────────≽
+    *Usage:* ${prefix}time [country name]
+    *Example:* ${prefix}time Japan
+                    `.trim();
+
+                    return await ridzcoder.sendMessage(m.chat, { 
+                        text: `${global.wm || ''}\n\n${timeInfo}`
+                    }, { quoted: m });
+                }
+
+                const timezones = moment.tz.zonesForCountry(countryName);
+                
+                if (!timezones || timezones.length === 0) {
+                    return reply(`❌ *Country not found!*\nPlease provide a valid country name.\n\nExample: ${prefix}time Japan`);
+                }
+
+                const primaryTimezone = timezones[0];
+                const now = moment().tz(primaryTimezone);
+                
+                const timeInfo = `
+    ╭──⧼♛  ⏰ *Time in ${countryName.toUpperCase()}* ⏰
+    │┃ ♛   
+    │┃ ♛   *Timezone:* ${primaryTimezone} (${now.format('Z')})
+    │┃ ♛   *Date:* ${now.format('dddd, MMMM Do YYYY')}
+    │┃ ♛   *Time:* ${now.format('h:mm:ss A')}
+    │┃ ♛  *24-hour format:* ${now.format('HH:mm:ss')}
+    │┃ ♛ *Week Number:* ${now.format('WW')}
+    │┃ ♛ *Day of Year:* ${now.format('DDD')}
+    ╰────────────────≽
+    *Other timezones in ${countryName}:* ${timezones.slice(0, 5).join(', ')}${timezones.length > 5 ? '...' : ''}
+                `.trim();
+
+                await ridzcoder.sendMessage(m.chat, { text: timeInfo }, { quoted: m });
+
+            } catch (error) {
+                console.error('Error in time command:', error);
+                reply('*Unable to fetch time information.*\nPlease try a different country name or try again later.');
+            }
+        }
+    },
+    {
+        command: ['calculate', 'calc'],
+        operate: async ({ reply, text, prefix }) => {
+            try {
+                if (!text) return reply(`📝 *Examples:*\n${prefix}calc 5 + 3\n${prefix}calc 10% of 200\n${prefix}calc 2^3\n${prefix}calc sqrt(16)`);
+
+                const expr = text
+                    .replace(/×/g, '*')
+                    .replace(/÷/g, '/')
+                    .replace(/π/g, Math.PI.toString())
+                    .replace(/\^/g, '**')
+                    .replace(/sqrt\(/g, 'Math.sqrt(')
+                    .replace(/sin\(/g, 'Math.sin(')
+                    .replace(/cos\(/g, 'Math.cos(')
+                    .replace(/tan\(/g, 'Math.tan(')
+                    .replace(/log\(/g, 'Math.log10(')
+                    .replace(/ln\(/g, 'Math.log(')
+                    .replace(/abs\(/g, 'Math.abs(')
+                    .replace(/%/g, '/100')
+                    .replace(/deg/g, 'deg')
+                    .replace(/,/g, ';')
+                    .trim();
+
+                const safeRegex = /^[0-9+\-*/().\s\^%πesincoqrtanlgabMh\s]+$/i;
+                if (!safeRegex.test(expr)) {
+                    return reply('*Invalid characters in expression.*\nOnly numbers, basic operators, and math functions are allowed.');
+                }
+
+                let result;
+                
+                if (text.includes('%')) {
+                    const percentMatch = text.match(/(\d+(?:\.\d+)?)%\s*(of)?\s*(\d+(?:\.\d+)?)/i);
+                    if (percentMatch) {
+                        const percent = parseFloat(percentMatch[1]);
+                        const number = parseFloat(percentMatch[3]);
+                        result = (percent / 100) * number;
+                    }
+                }
+                
+                const convertUnits = (value, fromUnit, toUnit) => {
+                    const conversions = {
+                        'cm': { 'm': 0.01, 'km': 0.00001, 'inch': 0.393701, 'ft': 0.0328084 },
+                        'm': { 'cm': 100, 'km': 0.001, 'inch': 39.3701, 'ft': 3.28084 },
+                        'km': { 'm': 1000, 'cm': 100000, 'mile': 0.621371 },
+                        'c': { 'f': (c) => (c * 9/5) + 32, 'k': (c) => c + 273.15 },
+                        'f': { 'c': (f) => (f - 32) * 5/9, 'k': (f) => (f - 32) * 5/9 + 273.15 },
+                        'kg': { 'g': 1000, 'lb': 2.20462 },
+                        'g': { 'kg': 0.001, 'lb': 0.00220462 },
+                    };
+                    
+                    if (fromUnit === toUnit) return value;
+                    
+                    if (['c', 'f'].includes(fromUnit)) {
+                        const tempFunc = conversions[fromUnit]?.[toUnit];
+                        if (tempFunc) return tempFunc(value);
+                    } else {
+                        const rate = conversions[fromUnit]?.[toUnit];
+                        if (rate) return value * rate;
+                    }
+                    
+                    return undefined;
+                };
+                
+                if (text.toLowerCase().includes('to')) {
+                    const conversionMatch = text.match(/(\d+(?:\.\d+)?)\s*(\w+)\s*to\s*(\w+)/i);
+                    if (conversionMatch) {
+                        const value = parseFloat(conversionMatch[1]);
+                        const fromUnit = conversionMatch[2].toLowerCase();
+                        const toUnit = conversionMatch[3].toLowerCase();
+                        
+                        result = convertUnits(value, fromUnit, toUnit);
+                        if (result !== undefined) {
+                            return reply(`*Conversion:* ${value} ${fromUnit} = ${result.toFixed(6).replace(/\.?0+$/, '')} ${toUnit}`);
+                        }
+                    }
+                }
+
+                if (result === undefined) {
+                    try {
+                        result = Function('"use strict"; return (' + expr + ')')();
+                        
+                        if (typeof result !== 'number' || isNaN(result) || !isFinite(result)) {
+                            throw new Error('Invalid result');
+                        }
+                        
+                    } catch (evalError) {
+                        console.error('Calculation error:', evalError);
+                        return reply('*Could not calculate the expression.*\nPlease check your syntax and try again.');
+                    }
+                }
+
+                let formattedResult = result;
+                if (Number.isInteger(result)) {
+                    formattedResult = result.toString();
+                } else {
+                    formattedResult = result.toFixed(6).replace(/\.?0+$/, '');
+                }
+
+                const calculationResponse = `
+    🧮 *CALCULATION RESULT*
+    
+    *Expression:* ${text}
+    *Result:* ${formattedResult}
+    
+    *Full precision:* ${result}
+                `.trim();
+
+                reply(calculationResponse);
+
+            } catch (error) {
+                console.error('Error in calculate command:', error);
+                reply('*An error occurred during calculation.*\nPlease try a different expression.');
+            }
+        }
+    },
+    {
+        command: ['say', 'tts', 'speak'],
+        operate: async ({ reply, m, ridzcoder, text, args }) => {
+            if (!text) return reply("*Text needed!*\n\nExample: .say Hello world");
+
+            try {
+                if (typeof googleTTS === 'undefined') {
+                    return reply("*TTS module not available.*\nPlease install: npm install google-tts-api");
+                }
+
+                const ttsData = await googleTTS.getAllAudioBase64(text, {
+                    lang: "en",
+                    slow: false,
+                    host: "https://translate.google.com",
+                    timeout: 10000,
+                });
+
+                if (!ttsData.length) return reply("*Failed to generate TTS audio.*");
+
+                const tempFiles = [];
+                for (let i = 0; i < ttsData.length; i++) {
+                    let filePath = `/tmp/tts_part${i}.mp3`;
+                    fs.writeFileSync(filePath, Buffer.from(ttsData[i].base64, "base64"));
+                    tempFiles.push(filePath);
+                }
+
+                let mergedFile = "/tmp/tts_merged.mp3";
+                let ffmpegCommand = `ffmpeg -i "concat:${tempFiles.join('|')}" -acodec copy ${mergedFile}`;
+                
+                exec(ffmpegCommand, async (err) => {
+                    if (err) {
+                        console.error("FFmpeg error:", err);
+                        tempFiles.forEach(file => {
+                            try { fs.unlinkSync(file); } catch (e) {}
+                        });
+                        return reply("*Error merging audio files.*");
+                    }
+
+                    await ridzcoder.sendMessage(
+                        m.chat,
+                        {
+                            audio: fs.readFileSync(mergedFile),
+                            mimetype: "audio/mp4",
+                            mp3: true,
+                            fileName: "tts_audio.mp3",
+                        },
+                        { quoted: m }
+                    );
+
+                    tempFiles.forEach(file => {
+                        try { fs.unlinkSync(file); } catch (e) {}
+                    });
+                    try { fs.unlinkSync(mergedFile); } catch (e) {}
+                });
+
+            } catch (error) {
+                console.error("Error in TTS Command:", error);
+                reply("*An error occurred while processing the TTS request.*");
+            }
+        }
+    },
+    {
+    command: ['texttosticker', 'ttp', 'textsticker'],
+    operate: async ({ ridzcoder, m, text, reply, args, prefix }) => {
+            if (!text) return reply(`Example: ${prefix}ttp Kevin`);
+
+    try {
+        const apiUrl = `https://api.princetechn.com/api/tools/ttp?apikey=prince&query=${encodeURIComponent(text)}`;
+        const response = await axios.get(apiUrl);
+
+        if (!response.data?.success || !response.data?.image_url) {
+            return reply(`Failed to generate image.`);
+        }
+
+        const imageBuffer = await axios({
+            method: 'GET',
+            url: response.data.image_url,
+            responseType: 'arraybuffer'
+        });
+
+        await ridzcoder.sendImageAsSticker(m.chat, Buffer.from(imageBuffer.data), m, {
+            packname: global.packname || 'NEMESIS-MD',
+            author: global.author || 'Ridz Coder'
+        });
+
+    } catch (error) {
+        console.error('TTP error:', error.message);
+        reply(`Error: ${error.message}`);
+    }
+    
+  }
+},
+{
+    command: ['translate', 'tr', 'eng', 'english'],
+    operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+              if (!text) {
+            return reply(`🌍 *Translate to English*\n\nUsage: ${prefix}translate <text>\n\nExamples:\n• ${prefix}translate Hola\n• ${prefix}translate Bonjour\n• ${prefix}translate 你好`);
+        }
+
+        try {
+            await ridzcoder.sendMessage(m.chat, {
+                react: { text: "🌍", key: m.key }
+            });
+
+            const apiUrl = `https://api.popcat.xyz/v2/translate?to=en&text=${encodeURIComponent(text)}`;
+            const res = await fetch(apiUrl, { timeout: 10000 });
+            const data = await res.json();
+
+            if (data.error === true) {
+                return reply(`❌ Translation failed: ${data.message || 'Unknown error'}`);
+            }
+
+            
+            let translated = data.message?.translated;
+            
+            if (translated && typeof translated === 'object') {
+                translated = translated.text || translated.translated || JSON.stringify(translated);
+            }
+            
+            if (!translated || typeof translated !== 'string') {
+                return reply(`❌ Translation failed. Could not extract translation from response.`);
+            }
+
+            await ridzcoder.sendMessage(m.chat, {
+                text: `*TRANSLATION*\n\n🗣️ *Original:* ${text}\n\n*Translatd:* ${translated}\n\n`
+            }, { quoted: m });
+
+        } catch (error) {
+            console.error('Translate error:', error);
+            
+            if (error.message.includes('timeout')) {
+                reply('⏰ Translation timeout. Try shorter text.');
+            } else {
+                reply('❌ Translation failed. Try again.');
+            }
+        }
+    }
+}, 
+    {
+        command: ['tinylink', 'shorten', 'shorturl', 'tinyurl'],
+        operate: async ({ reply, prefix, text, axios }) => {
+            if (!text) return reply(`*Example:* ${prefix}shorten https://github.com/Kevintech-hub/Vinic-Xmd-`);
+            
+            if (!text.startsWith('http')) {
+                text = 'https://' + text;
+            }
+            
+            const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/;
+            if (!urlPattern.test(text)) {
+                return reply("*Invalid URL format!*\nPlease provide a valid URL.");
+            }
+            
+            try {
+                const response = await axios.get(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(text)}`);
+                
+                if (response.data && response.data.includes('http')) {
+                    reply(`🔗 *URL Shortened Successfully!*\n\n📌 *Original URL:*\n${text}\n\n✨ *Shortened URL:*\n${response.data}`);
+                } else {
+                    reply("*Failed to shorten URL. Please try again later.*");
+                }
+            } catch (error) {
+                console.error('URL shortening error:', error);
+                reply('*An error occurred while shortening the URL.*\nPlease try again later.');
+            }
+        }
+    },
+
+    // ─────────────────────────────────────────────
+    // PRINCETECH URL SHORTENERS
+    // ─────────────────────────────────────────────
+    {
+        command: ['tinyurl2', 'tinyurlshort'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}tinyurl2 <url>\n📌 *Example:* ${prefix}tinyurl2 https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/tinyurl?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *TinyURL*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('tinyurl2 error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['cleanuri', 'cleanurl'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}cleanuri <url>\n📌 *Example:* ${prefix}cleanuri https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/cleanuri?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *CleanURI*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('cleanuri error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['vgd', 'vgdshort'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}vgd <url>\n📌 *Example:* ${prefix}vgd https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/vgd?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *VGD*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('vgd error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['rebrandly', 'rebrand'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}rebrandly <url>\n📌 *Example:* ${prefix}rebrandly https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/rebrandly?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *Rebrandly*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('rebrandly error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['vurl', 'vurlshort'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}vurl <url>\n📌 *Example:* ${prefix}vurl https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/vurl?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *Vurl*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('vurl error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['adfoc', 'adfocshort'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}adfoc <url>\n📌 *Example:* ${prefix}adfoc https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/adfoc?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *Adfoc*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('adfoc error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['ssur', 'ssurshort'],
+        operate: async ({ ridzcoder, m, reply, text, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}ssur <url>\n📌 *Example:* ${prefix}ssur https://google.com`);
+            if (!text.startsWith('http')) text = 'https://' + text;
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/ssur?apikey=prince&url=${encodeURIComponent(text)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *Ssur*\n\n📌 *Original:* ${text}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('ssur error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+    {
+        command: ['shorten2', 'shorturl2', 'shrink'],
+        operate: async ({ ridzcoder, m, reply, text, args, prefix }) => {
+            if (!text) return reply(`📌 *Usage:* ${prefix}shorten2 <url> [provider]\n📌 *Providers:* tinyurl, cleanuri, vgd, rebrandly, vurl, adfoc, ssur\n📌 *Example:* ${prefix}shorten2 https://google.com tinyurl`);
+
+            let url = args[0];
+            let provider = (args[1] || 'tinyurl').toLowerCase();
+
+            if (!url) return reply("❌ Please provide a URL.");
+            if (!url.startsWith('http')) url = 'https://' + url;
+
+            const validProviders = ['tinyurl', 'cleanuri', 'vgd', 'rebrandly', 'vurl', 'adfoc', 'ssur'];
+            if (!validProviders.includes(provider)) {
+                return reply(`❌ Invalid provider. Choose from: ${validProviders.join(', ')}`);
+            }
+
+            try {
+                await ridzcoder.sendMessage(m.chat, { react: { text: "🔗", key: m.key } });
+                const apiUrl = `https://api.princetechn.com/shortener/${provider}?apikey=prince&url=${encodeURIComponent(url)}`;
+                const { data } = await axios.get(apiUrl);
+
+                if (!data.success || !data.result) throw new Error('No short URL');
+
+                const shortUrl = data.result.shortUrl || data.result.short_url || data.result;
+                await reply(`🔗 *${provider.toUpperCase()}*\n\n📌 *Original:* ${url}\n✨ *Short:* ${shortUrl}\n\n> ${global.wm || ''}`);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+            } catch (e) {
+                console.error('shorten2 error:', e);
+                await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+                reply("❌ Failed to shorten URL.");
+            }
+        }
+    },
+
+    {
+        command: ['qrcode', 'qr'],
+        operate: async ({ reply, m, ridzcoder, text }) => {
+            if (!text) return reply("Enter text or URL");
+
+            try {
+                let res = await fetch(`https://api.qrserver.com/v1/create-qr-code/?data=${text}&size=200x200`);
+                let qrCodeUrl = res.url;
+
+                await ridzcoder.sendMessage(m.chat, { 
+                    image: { url: qrCodeUrl },
+                    caption: `QR Code for: ${text}`
+                }, { quoted: m });
+            } catch (error) {
+                console.error('Error generating QR code:', error);
+                reply('An error occurred while generating the QR code.');
+            }
+        }
+    },
+    {
+        command: ['browse', 'fetch'],
+        operate: async ({ reply, m, ridzcoder, text }) => {
+            if (!text) return reply("Enter URL");
+
+            try {
+                let res = await fetch(text);
+
+                if (res.headers.get('Content-Type').includes('application/json')) {
+                    let json = await res.json();
+                    await ridzcoder.sendMessage(m.chat, { 
+                        text: JSON.stringify(json, null, 2) 
+                    }, { quoted: m });
+                } else {
+                    let resText = await res.text();
+                    await ridzcoder.sendMessage(m.chat, { 
+                        text: resText 
+                    }, { quoted: m });
+                }
+
+                if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+            } catch (error) {
+                reply(`Error fetching URL: ${error.message}`);
+            }
+        }
+    },
+    {
+        command: ['filtervcf', 'cleanvcf'],
+        operate: async ({ reply, m, ridzcoder, text }) => {
+            const quoted = m.quoted ? m.quoted : null;
+            const mime = quoted?.mimetype || "";
+            const normalizePhoneNumber = (phone) => {
+                if (!phone || typeof phone !== 'string') return null;
+                return phone.replace(/\D/g, '');
+            };
+
+            if (!quoted || !(mime === "text/vcard" || mime === "text/x-vcard")) {
+                return ridzcoder.sendMessage(m.chat, { 
+                    text: "❌ *Error:* Reply to a `.vcf` file with `.filtervcf` or `.cleanvcf`!" 
+                }, { quoted: m });
+            }
+
+            try {
+                const media = await quoted.download();
+                const vcfContent = media.toString('utf8');
+                
+                await ridzcoder.sendMessage(m.chat, { 
+                    text: "🔍 Filtering VCF - checking WhatsApp numbers, this may take a while..." 
+                }, { quoted: m });
+
+                const vCards = vcfContent.split('END:VCARD')
+                    .map(card => card.trim())
+                    .filter(card => card.length > 0);
+
+                const validContacts = [];
+                const invalidContacts = [];
+                let processed = 0;
+
+                for (const card of vCards) {
+                    try {
+                        const telMatch = card.match(/TEL[^:]*:([^\n]+)/);
+                        if (!telMatch) continue;
+                        
+                        const phoneRaw = telMatch[1].trim();
+                        const phoneNumber = normalizePhoneNumber(phoneRaw);
+                        if (!phoneNumber) continue;
+
+                        const jid = `${phoneNumber}@s.whatsapp.net`;
+                        const result = await ridzcoder.onWhatsApp(jid);
+                        
+                        if (result.length > 0 && result[0].exists) {
+                            validContacts.push(card);
+                        } else {
+                            invalidContacts.push(phoneNumber);
+                        }
+                    } catch (error) {
+                        console.error('Error processing contact:', error);
+                    }
+                }
+
+                const filteredVcf = validContacts.join('\nEND:VCARD\n') + (validContacts.length > 0 ? '\nEND:VCARD' : '');
+                
+                const resultMessage = `
+                     ╭──⧼♛ *VCF Filtering Complete*\n\n` +
+                    `│┃ ♛ Total contacts: ${vCards.length}\n` +
+                    `│┃ ♛ Valid WhatsApp contacts: ${validContacts.length}\n` +
+                    `│┃ ♛ Non-WhatsApp numbers removed: ${invalidContacts.length}\n\n` +
+                    `╰────────────────≽` +
+                    `Sending filtered VCF file...`;
+
+                await ridzcoder.sendMessage(m.chat, { text: resultMessage }, { quoted: m });
+
+                await ridzcoder.sendMessage(m.chat, { 
+                    document: Buffer.from(filteredVcf), 
+                    mimetype: "text/x-vcard", 
+                    fileName: "filtered_contacts.vcf" 
+                });
+
+            } catch (error) {
+                await ridzcoder.sendMessage(m.chat, { 
+                    text: `❌ *Error:* ${error.message}` 
+                }, { quoted: m });
+            }
+        }
+    },
+    {
+    command: ['removebg', 'nobg', 'rmbg'],
+    operate: async ({ ridzcoder, m, mime, quoted, reply, text, prefix }) => {        
+    if (!quoted || !/image/.test(mime)) {
+        return reply(`*🖼️ REMOVE BACKGROUND*\n\nReply to an image with this command to remove its background.\n\n*Usage:*\n${prefix}removebg (reply to an image)\n${prefix}rmbg (reply to an image)\n\n*Example:* Reply to an image with .removebg`);
+    }
+
+    await reply(`🖼️ *Processing image...*\n\n⏳ Removing background, please wait...`);
+    await ridzcoder.sendMessage(m.chat, { react: { text: "🎨", key: m.key } });
+
+    try {
+        const imageUrl = await handleMediaUpload(quoted, ridzcoder, mime);
+        
+        if (!imageUrl || imageUrl.includes('exceeds the limit')) {
+            return reply(`*Failed to upload image!*\n\nPlease try again with a smaller image.`);
+        }
+
+        const apiUrl = `https://api.nexray.eu.cc/tools/removebg?url=${encodeURIComponent(imageUrl)}`;
+        const response = await axios.get(apiUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        const contentType = response.headers['content-type'];
+        
+        if (contentType && contentType.includes('image')) {
+            await ridzcoder.sendMessage(m.chat, {
+                image: Buffer.from(response.data),
+                caption: `✅ *Background removed successfully!*`
+            }, { quoted: m });
+            await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+        } else {
+            throw new Error('Invalid response from API');
+        }
+
+    } catch (error) {
+        console.error('RemoveBG error:', error);
+        await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+        reply(`*Failed to remove background!*\n\nPlease try again with a different image.`);
+    }
+   
+   }
+},
+    {
+        command: ['styletext', 'fancytext', 'stylish'],
+        operate: async ({ reply, text }) => {
+            if (!text) return reply('*Enter a text!*');
+            
+            try {
+                let anu = await styletext(text);
+                let teks = `*Styles for "${text}"*\n\n`;
+                
+                for (let i of anu) {
+                    teks += `▢ *${i.name}* : ${i.result}\n\n`;
+                }
+                
+                reply(teks);
+            } catch (error) {
+                console.error(error);
+                reply('*An error occurred while fetching fancy text styles.*');
+            }
+        }
+},
+{
+        command: ['take', 'copysticker', 'stealsticker'],
+        operate: async ({ ridzcoder, m, reply, args, text }) => {
+            await takeCommand(ridzcoder, m.chat, m, args);
+        }
+},
+{
+    command: ['obfuscate'],
+    operate: async ({ reply, m, ridzcoder }) => {
+        const tmpDir = './tmp';
+        if (!fs.existsSync(tmpDir)) {
+            fs.mkdirSync(tmpDir, { recursive: true });
+        }
+        
+        const quoted = m.quoted ? m.quoted : null;
+        const mime = quoted?.mimetype || "";
+
+        if (!quoted || mime !== "application/javascript") {
+            return ridzcoder.sendMessage(m.chat, { 
+                text: "❌ *Error:* Reply to a `.js` file with `.obfuscate`!" 
+            }, { quoted: m });
+        }
+        
+        try {
+            const media = await quoted.download();
+            const tempFile = `./tmp/original-${Date.now()}.js`;
+            await fs.promises.writeFile(tempFile, media);
+
+            ridzcoder.sendMessage(m.chat, { 
+                text: "🔒 Obfuscation started..." 
+            }, { quoted: m });
+
+            const obfuscatedFile = await obfuscateJS(tempFile);
+
+            await ridzcoder.sendMessage(m.chat, { 
+                text: "✅ Obfuscation complete! Sending file..." 
+            }, { quoted: m }); 
+            
+            await ridzcoder.sendMessage(m.chat, { 
+                document: fs.readFileSync(obfuscatedFile), 
+                mimetype: "text/javascript", 
+                fileName: "nemesis.js" 
+            });
+
+            await fs.promises.unlink(tempFile);
+            await fs.promises.unlink(obfuscatedFile);
+            
+        } catch (error) {
+            ridzcoder.sendMessage(m.chat, { 
+                text: `❌ *Error:* ${error.message}` 
+            }, { quoted: m });
+        }
+    }
+},
+{
+        command: ['emoji', 'emojify'],
+        operate: async ({ ridzcoder, m, reply, args, text }) => {
+            try {
+                let inputText = text || args.join(" ");
+                
+                if (!inputText) {
+                    return reply("Please provide some text to convert into emojis!");
+                }
+
+                let emojiMapping = {
+                    "a": "🅰️", "b": "🅱️", "c": "🇨️", "d": "🇩️", "e": "🇪️",
+                    "f": "🇫️", "g": "🇬️", "h": "🇭️", "i": "🇮️", "j": "🇯️",
+                    "k": "🇰️", "l": "🇱️", "m": "🇲️", "n": "🇳️", "o": "🅾️",
+                    "p": "🇵️", "q": "🇶️", "r": "🇷️", "s": "🇸️", "t": "🇹️",
+                    "u": "🇺️", "v": "🇻️", "w": "🇼️", "x": "🇽️", "y": "🇾️",
+                    "z": "🇿️", "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣",
+                    "4": "4️⃣", "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣",
+                    "9": "9️⃣", " ": "␣", "!": "❗", "?": "❓", ".": "🔸"
+                };
+
+                let emojiText = inputText.toLowerCase().split("").map(char => emojiMapping[char] || char).join("");
+
+                await ridzcoder.sendMessage(m.chat, {
+                    text: emojiText,
+                }, { quoted: m });
+
+            } catch (error) {
+                console.log(error);
+                reply(`Error: ${error.message}`);
+            }
+        }
+    },
+    {
+  command: ['countryinfo', 'country', 'infonegara'],
+  operate: async ({ m, reply, args, ridzcoder }) => {
+    const country = args.join(' ');
+    
+    if (!country) return reply("*Please provide a country name. Example: `.countryinfo Uganda*`");
+    
+    try {
+      const response = await fetch(`${global.siputzx}/api/tools/countryInfo?name=${encodeURIComponent(country)}`);
+      const data = await response.json();
+      
+      if (!data.status || !data.data) {
+        return reply(`No information found for "${country}"`);
+      }
+      
+      const info = data.data;
+      
+      let message = `╭──⧼♛*Country Information: ${info.name}*\n\n`;
+      message += `│┃ ♛ Capital: ${info.capital || 'N/A'}\n`;
+      message += `│┃ ♛ Phone Code: ${info.phoneCode || 'N/A'}\n`;
+      message += `│┃ ♛ Continent: ${info.continent?.name || 'N/A'}\n`;
+      message += `│┃ ♛ Coordinates: ${info.coordinates?.latitude || 'N/A'}, ${info.coordinates?.longitude || 'N/A'}\n`;
+      message += `│┃ ♛ Area: ${info.area?.squareKilometers?.toLocaleString() || 'N/A'} km²\n`;
+      message += `│┃ ♛ Landlocked: ${info.landlocked ? 'Yes' : 'No'}\n`;
+      message += `│┃ ♛ Famous For: ${info.famousFor || 'N/A'}\n`;
+      message += `│┃ ♛ Government: ${info.constitutionalForm || 'N/A'}\n`;
+      message += `│┃ ♛ Currency: ${info.currency || 'N/A'}\n`;
+      message += `│┃ ♛ Driving Side: ${info.drivingSide || 'N/A'}\n`;
+      message += `│┃ ♛ Internet TLD: ${info.internetTLD || 'N/A'}\n`;
+      message += `│┃ ♛ ISO Code: ${info.isoCode?.alpha2?.toUpperCase() || 'N/A'}\n\n`;
+      message += `╰────────────────≽`;
+      
+      if (info.languages) {
+        message += `Languages:\n`;
+        if (info.languages.native?.length) message += `  Native: ${info.languages.native.join(', ')}\n`;
+        if (info.languages.codes?.length) message += `  Codes: ${info.languages.codes.join(', ')}\n`;
+      }
+      
+      if (info.neighbors?.length) {
+        message += `\nNeighboring Countries:\n`;
+        info.neighbors.slice(0, 3).forEach(neighbor => {
+          message += `  • ${neighbor.name}\n`;
+        });
+      }
+      
+      if (info.flag) {
+        await ridzcoder.sendMessage(m.chat, {
+          image: { url: info.flag },
+          caption: message
+        }, { quoted: m });
+      } else {
+        reply(message);
+      }
+      
+    } catch (error) {
+      console.error('Country info error:', error);
+      reply("Error fetching country information.");
+    }
+  }
+},
+{
+  command: ['translate2', 'tr2', 'tl2'],
+  operate: async ({ m, reply, args, ridzcoder }) => {
+    const text = args.join(' ');
+    
+    if (!text) return reply("*Please provide text to translate. Example: `.translate2 en:id I love you*`");
+    
+    try {
+      let sourceLang = 'en';
+      let targetLang = 'id';
+      let translateText = text;
+      
+      const match = text.match(/^([a-z]{2}):([a-z]{2})\s+(.+)/i);
+      if (match) {
+        sourceLang = match[1].toLowerCase();
+        targetLang = match[2].toLowerCase();
+        translateText = match[3];
+      }
+      
+      const url = `${global.siputzx}/api/tools/translate?text=${encodeURIComponent(translateText)}&source=${sourceLang}&target=${targetLang}`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (!data.status || !data.data?.translatedText) {
+        return reply(`Translation failed.`);
+      }
+      
+      const result = `
+╭──⧼♛ *NEMESIS MD TRANSLATION*
+│┃ ♛
+│┃ ♛ *Original:* ${translateText}
+│┃ ♛ *Translated:* ${data.data.translatedText}
+│┃ ♛ *${sourceLang} → ${targetLang}*
+╰────────────────≽
+> ${global.wm || ''}
+      `;
+      
+      reply(result);
+      
+    } catch (error) {
+      console.error('Translate error:', error);
+      reply("❌ Error translating text.");
+    }
+  }
+},
+    {
+    command: ['cekidch', 'idch'],
+    operate: async ({ ridzcoder, m, reply, text }) => {
+        if (!text) return reply("*Please provide a WhatsApp channel link*");
+        if (!text.includes("https://whatsapp.com/channel/")) return reply("*Invalid channel link*");
+        
+        try {
+            let result = text.split('https://whatsapp.com/channel/')[1];
+            let res = await ridzcoder.newsletterMetadata("invite", result);
+            
+            let teks = `
+╭──⧼♛ *NEMESIS MD CH ID*
+│┃ ♛*ID:* ${res.id}
+│┃ ♛*Name:* ${res.name}
+│┃ ♛*Total followers:* ${res.subscribers}
+│┃ ♛*Status:* ${res.state}
+│┃ ♛*Verified:* ${res.verification == "VERIFIED" ? "✅ Verified" : "❌ Not Verified"}
+╰────────────────≽
+`;
+            
+            return reply(teks);
+            
+        } catch (error) {
+            console.error('Error fetching channel info:', error);
+            return reply("*Failed to fetch channel information. Please check the link and try again.*");
+        }
+    }
+},
+{
+        command: ['npm'],
+        operate: async ({ ridzcoder, m, reply, args, text, botNumber, }) => {
+            try {
+                if (!args.length) {
+                    return reply("Please provide the name of the npm package you want to search for. Example: .npm express");
+                }
+
+                const packageName = args.join(" ");
+                const apiUrl = `https://registry.npmjs.org/${encodeURIComponent(packageName)}`;
+
+                const response = await axios.get(apiUrl);
+                if (response.status !== 200) {
+                    throw new Error("Package not found or an error occurred.");
+                }
+
+                const packageData = response.data;
+                const latestVersion = packageData["dist-tags"].latest;
+                const description = packageData.description || "No description available.";
+                const npmUrl = `https://www.npmjs.com/package/${packageName}`;
+                const license = packageData.license || "Unknown";
+                const repository = packageData.repository ? packageData.repository.url : "Not available";
+
+                const message = `
+╭──⧼♛*${global.botname} npm search*
+│┃ ♛
+│┃ ♛* NPM PACKAGE:* ${packageName}
+│┃ ♛* DESCRIPTION:* ${description}
+│┃ ♛* LAST VERSION:* ${latestVersion}
+│┃ ♛* LICENSE:* ${license}
+│┃ ♛* REPOSITORY:* ${repository}
+│┃ ♛* NPM URL:* ${npmUrl}
+╰────────────────≽
+`;
+
+                await ridzcoder.sendMessage(m.chat, { text: message }, { quoted: m });
+
+            } catch (error) {
+                console.error("Error:", error);
+                reply("An error occurred: " + error.message);
+            }
+        }
+},
+{
+    command: ['gpass', 'password', 'genpass'],
+    operate: async ({ ridzcoder, m, reply, text }) => {
+        let length = text ? parseInt(text) : 12;
+        if (isNaN(length) || length < 6 || length > 50) {
+            return reply("Please provide a valid length between 6 and 50. Example: .gpass 16");
+        }
+        
+        let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+";
+        let pass = "";
+        for (let i = 0; i < length; i++) {
+            pass += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        
+        try {
+            ridzcoder.sendMessage(m.chat, { text: pass }, { quoted: m });
+        } catch (error) {
+            console.error('Error generating password:', error);
+            reply('An error occurred while generating the password.');
+        }
+    }
+},
+{
+  command: ['emojimix', 'emix'],
+  operate: async ({ m, text, prefix, command, ridzcoder, reply }) => {
+        if (!text) return reply(`🎨 *EMOJI MIXER*\n\nMix two emojis to create a new one!\n\n*Usage:*\n${prefix}emojimix 🥺 🤔\n${prefix}emix 😂 🥲\n${prefix}emojimix 🔥 💀\n\n*Example:*\n${prefix}emojimix 🥺 🤔`);
+
+    const emojiRegex = /[\p{Emoji}\uFE0F\u20E3]/gu;
+    const emojis = text.match(emojiRegex);
+    
+    if (!emojis || emojis.length < 2) {
+        return reply(`❌ *Please provide TWO emojis!*\n\nExample: ${prefix}emojimix 😂 🥲`);
+    }
+
+    const emoji1 = emojis[0];
+    const emoji2 = emojis[1];
+
+    await reply(`🔍 *Mixing ${emoji1} + ${emoji2}...*`);
+    await ridzcoder.sendMessage(m.chat, { react: { text: "🎨", key: m.key } });
+
+    try {
+        const apiUrl = `https://api.nexray.eu.cc/tools/emojimix?emoji1=${encodeURIComponent(emoji1)}&emoji2=${encodeURIComponent(emoji2)}`;
+        const response = await axios.get(apiUrl, {
+            responseType: 'arraybuffer',
+            timeout: 15000
+        });
+
+        const contentType = response.headers['content-type'];
+        if (contentType && contentType.includes('image')) {
+            await ridzcoder.sendMessage(m.chat, {
+                image: Buffer.from(response.data),
+                caption: `> ${global.wm}`
+            }, { quoted: m });
+            await ridzcoder.sendMessage(m.chat, { react: { text: "✅", key: m.key } });
+        } else {
+            throw new Error('Invalid response from API');
+        }
+
+    } catch (error) {
+        console.error('Emojimix error:', error);
+        await ridzcoder.sendMessage(m.chat, { react: { text: "❌", key: m.key } });
+        reply(`❌ *Failed to mix emojis.*\n\nPlease try different emojis or try again later.`);
+    }
+    
+  }
+},
+{
+  command: ['trackip'],
+  operate: async ({ m, text, prefix, command, ridzcoder, reply }) => {
+  if (!text) return m.reply(`*Example:* ${prefix + command} 112.90.150.204`);
+try {
+let res = await fetch(`https://ipwho.is/${text}`).then(result => result.json());
+
+const formatIPInfo = (info) => {
+ return `
+╭──⧼♛ *IP Information*
+│┃ ♛• IP: ${info.ip || 'N/A'}
+│┃ ♛• Success: ${info.success || 'N/A'}
+│┃ ♛• Type: ${info.type || 'N/A'}
+│┃ ♛• Continent: ${info.continent || 'N/A'}
+│┃ ♛• Continent Code: ${info.continent_code || 'N/A'}
+│┃ ♛• Country: ${info.country || 'N/A'}
+│┃ ♛• Country Code: ${info.country_code || 'N/A'}
+│┃ ♛• Region: ${info.region || 'N/A'}
+│┃ ♛• Region Code: ${info.region_code || 'N/A'}
+│┃ ♛• City: ${info.city || 'N/A'}
+│┃ ♛• Latitude: ${info.latitude || 'N/A'}
+│┃ ♛• Longitude: ${info.longitude || 'N/A'}
+│┃ ♛• Is EU: ${info.is_eu ? 'Yes' : 'No'}
+│┃ ♛• Postal: ${info.postal || 'N/A'}
+│┃ ♛• Calling Code: ${info.calling_code || 'N/A'}
+│┃ ♛• Capital: ${info.capital || 'N/A'}
+│┃ ♛• Borders: ${info.borders || 'N/A'}
+╰────────────────≽
+╭──⧼♛Flag
+│┃ ♛ - Image: ${info.flag?.img || 'N/A'}
+│┃ ♛ - Emoji: ${info.flag?.emoji || 'N/A'}
+│┃ ♛ - Emoji Unicode: ${info.flag?.emoji_unicode || 'N/A'}
+╰────────────────≽
+╭──⧼♛• Connection:
+│┃ ♛ - ASN: ${info.connection?.asn || 'N/A'}
+│┃ ♛ - Organization: ${info.connection?.org || 'N/A'}
+│┃ ♛ - ISP: ${info.connection?.isp || 'N/A'}
+│┃ ♛ - Domain: ${info.connection?.domain || 'N/A'}
+╰────────────────≽
+╭──⧼♛• Timezone:
+│┃ ♛ - ID: ${info.timezone?.id || 'N/A'}
+│┃ ♛ - Abbreviation: ${info.timezone?.abbr || 'N/A'}
+│┃ ♛ - Is DST: ${info.timezone?.is_dst ? 'Yes' : 'No'}
+│┃ ♛ - Offset: ${info.timezone?.offset || 'N/A'}
+│┃ ♛ - UTC: ${info.timezone?.utc || 'N/A'}
+│┃ ♛ - Current Time: ${info.timezone?.current_time || 'N/A'}
+╰────────────────≽
+`;
+};
+
+if (!res.success) throw new Error(`IP ${text} not found!`);
+await ridzcoder.sendMessage(m.chat, { location: { degreesLatitude: res.latitude, degreesLongitude: res.longitude } }, { ephemeralExpiration: 604800 });
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+await delay(2000);
+m.reply(formatIPInfo(res)); 
+} catch (e) { 
+m.reply(`Error: Unable to retrieve data for IP ${text}`);
+  }
+ }
+}
+
+]
